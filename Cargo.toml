@@ -1,0 +1,13 @@
+[package]
+name = "series-store"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+anyhow = "1.0.82"
+rdkafka = { version = "0.36.2", default-features = false, features = ["tokio", "cmake-build"] }
+
+# shared-types = { git = "https://github.com/mentics-ml-demo/shared-types.git", branch = "main" }
+shared-types = { path = "/home/jshellman/dev/ml-demo/shared-types" }
