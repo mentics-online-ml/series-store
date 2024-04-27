@@ -1,9 +1,6 @@
 mod util;
 
 use std::array::IntoIter;
-use std::collections::HashMap;
-use std::env;
-use std::str::from_utf8;
 use std::time::Duration;
 
 use anyhow::{bail, Context};
@@ -11,7 +8,7 @@ use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::{BorrowedMessage, ToBytes};
 use rdkafka::producer::{DeliveryFuture, FutureProducer, FutureRecord};
-use rdkafka::{Message, Offset, TopicPartitionList};
+use rdkafka::{Offset, TopicPartitionList};
 use shared_types::{EventId, Features, Raw};
 use util::*;
 
@@ -30,79 +27,21 @@ impl SeriesReader {
         tpl.add_partition_offset(&topics.event, 0, Offset::OffsetTail(1))?;
         tpl.add_partition_offset(&topics.label, 0, Offset::OffsetTail(1))?;
         consumer.assign(&tpl)?;
-        // consumer.seek_partitions(tpl, Duration::from_millis(1000))?;
 
         Ok(Self { consumer, topics })
     }
 
     pub fn try_most_recent_event_ids(&self) -> anyhow::Result<Topics<u64>> {
-        // let list = self.consumer.committed(Duration::from_millis(2000))?;
-        // println!("*************");
-        // println!("committed: {:?}", list);
-        // println!("position: {:?}", self.consumer.position()?);
-        // println!("*************");
-        // let elms = list.elements();
-        // let hm: HashMap<_, _> = elms.iter().map(|tpl| (tpl.topic(), to_event_id(tpl.offset()))).collect();
-        // Ok(Topics {
-        //     raw: hm[self.topics.raw.as_str()],
-        //     event: hm[&self.topics.event.as_str()],
-        //     label: hm[&self.topics.label.as_str()]
-        // })
-
-        // let marks: Topics<u64> =
          self.topics_iter().map(|topic| {
             self.consumer.fetch_watermarks(&topic, 0, Duration::from_millis(2000)).map(|w| w.1 as u64)
         }).collect::<Result<Topics<u64>,KafkaError>>().with_context(|| "Could not get watermarks")
-        // let raw = self.consumer.fetch_watermarks(&self.topics.raw, 0, Duration::from_millis(2000))?;
-        // let event = self.consumer.fetch_watermarks(&self.topics.event, 0, Duration::from_millis(2000))?;
-        // let label = self.consumer.fetch_watermarks(&self.topics.label, 0, Duration::from_millis(2000))?;
-        // println!("watermarks: {:?}", marks);
-        // marks
     }
 
     fn topics_iter(&self) -> IntoIter<&String, 3> { //std::slice::Iter<'_, &String> {
         [&self.topics.raw, &self.topics.event, &self.topics.label].into_iter()
     }
 
-    // pub fn try_most_recent_raw(&self) -> anyhow::Result<Raw> {
-    //     let msg = self.try_most_recent(&self.topics.raw)?;
-    //     let event_id = try_event_id(&msg)?;
-    //     let bytes = msg.payload().with_context(|| format!("Invalid payload in message {event_id}"))?;
-    //     let str = from_utf8(bytes)?;
-    //     Ok(Raw {id: event_id, raw: str.to_string() })
-    // }
-
-    // pub fn try_most_recent_features(&self) -> anyhow::Result<Features> {
-    //     let msg = self.try_most_recent(&self.topics.raw)?;
-    //     let event_id = try_event_id(&msg)?;
-    //     let bytes = msg.payload().with_context(|| format!("Invalid payload in message {event_id}"))?;
-    //     Ok(Features { id: event_id, x: deserialize_features(bytes).x })
-    // }
-
     pub fn try_most_recent(&self, topic: &str) -> anyhow::Result<BorrowedMessage> {
-        // let c = self.consumer.committed(Duration::from_millis(2000));
-        // println!("Committed 1:\n{:?}", c);
-
-        // // let hm = HashMap::from([((topic.to_string(), 0), Offset::OffsetTail(1))]);
-        // // let tpl = TopicPartitionList::from_topic_map(&hm).unwrap();
-        // let mut tpl = TopicPartitionList::new();
-        // let tp = tpl.add_partition(topic, 0);
-
-        // let pos = self.consumer.position()?;
-        // println!("Position 1:\n{:?}", pos);
-
-        // self.consumer.assign(&tpl)?;
-
-        // let pos = self.consumer.position()?;
-        // println!("Position 2:\n{:?}", pos);
-
-        // let c = self.consumer.committed(Duration::from_millis(2000));
-        // println!("Committed 2:\n{:?}", c);
-
-        // let pos = self.consumer.position()?;
-        // println!("TPL:\n{:?}", pos);
-        // panic!("stop");
-
         match self.consumer.poll(Duration::from_millis(2000)) {
             Some(res) => res.with_context(|| format!("Error polling {topic}")),
             None => bail!("No message found for topic {}", topic),
@@ -164,16 +103,5 @@ impl SeriesWriter {
             .headers(meta)
             .payload(payload);
         self.producer.send_result(rec)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn it_works() {
-        // let result = add(2, 2);
-        // assert_eq!(result, 4);
     }
 }

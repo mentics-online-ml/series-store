@@ -28,16 +28,6 @@ impl<T: Default> FromIterator<T> for Topics<T> {
     }
 }
 
-// impl<T:Default,E> FromIterator<Result<T,E>> for Result<Topics<T>,E> {
-//     fn from_iter<I: IntoIterator<Item = Result<T,E>>>(iter: I) -> Result<Self,E> {
-//         let mut ii = iter.into_iter();
-//         let raw = ii.next().unwrap_or(T::default())?;
-//         let event = ii.next().unwrap_or(T::default())?;
-//         let label = ii.next().unwrap_or(T::default())?;
-//         Topics { raw, event, label }
-//     }
-// }
-
 fn get_brokers() -> String { env::var("REDPANDA_ENDPOINT").expect("Required environment variable REDPANDA_ENDPOINT not set") }
 
 pub(crate) fn get_topics() -> Topics<String> {
