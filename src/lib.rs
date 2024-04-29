@@ -8,17 +8,18 @@ use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::{BorrowedMessage, ToBytes};
 use rdkafka::producer::{DeliveryFuture, FutureProducer, FutureRecord};
-use rdkafka::{Offset, TopicPartitionList};
-use shared_types::{EventId, Features, Raw};
+use rdkafka::{Message, Offset, TopicPartitionList};
+use shared_types::{Event, EventId, Logger, Raw};
 use util::*;
 
 pub struct SeriesReader {
     consumer: BaseConsumer,
-    topics: Topics<String>,
+    pub topics: Topics<String>,
+    logger: Box<dyn Logger>,
 }
 
 impl SeriesReader {
-    pub fn new() -> anyhow::Result<Self> {
+    pub fn new(logger: Box<dyn Logger>) -> anyhow::Result<Self> {
         let topics = get_topics();
         let consumer = util::create_consumer();
 
@@ -28,7 +29,7 @@ impl SeriesReader {
         tpl.add_partition_offset(&topics.label, 0, Offset::OffsetTail(1))?;
         consumer.assign(&tpl)?;
 
-        Ok(Self { consumer, topics })
+        Ok(Self { consumer, topics, logger })
     }
 
     pub fn try_most_recent_event_ids(&self) -> anyhow::Result<Topics<u64>> {
@@ -47,6 +48,53 @@ impl SeriesReader {
             None => bail!("No message found for topic {}", topic),
         }
     }
+
+    // pub fn foreach_event<F: Fn(Event) -> ()>(&self, func: F) {
+    //     for maybe_msg in self.consumer.iter() {
+    //         match maybe_msg {
+    //             Ok(msg) => {
+    //                 match msg.payload() {
+    //                     Some(payload) => {
+    //                         func(deserialize_event(payload));
+    //                     }
+    //                     None => self.logger.log(format!("Could not get payload for message {:?}", msg))
+    //                 }
+    //             },
+    //             Err(e) => {
+    //                 self.logger.log(format!("Error reading series-store {:?}", e));
+    //             },
+    //         }
+    //     }
+    // }
+
+    pub async fn foreach_event<F, Fut>(&self, func: F)
+    where
+        Fut: std::future::Future<Output = ()>,
+        F: Fn(Event) -> Fut,
+    {
+        for maybe_msg in self.consumer.iter() {
+            match maybe_msg {
+                Ok(msg) => {
+                    match msg.payload() {
+                        Some(payload) => {
+                            let des = deserialize_event(payload);
+                            func(des).await;
+                        }
+                        None => self.logger.log(format!("Could not get payload for message {:?}", msg))
+                    }
+                },
+                Err(e) => {
+                    self.logger.log(format!("Error reading series-store {:?}", e));
+                },
+            }
+        }
+    }
+
+    pub fn seek(&self, topic: &str, offset: i64) -> anyhow::Result<()> {
+        self.consumer.seek(&topic, 0, Offset::OffsetTail(-offset), Duration::from_millis(2000))?;
+        Ok(())
+    }
+
 }
 
 pub struct SeriesWriter {
@@ -71,19 +119,19 @@ impl SeriesWriter {
             .map_err(|e| e.0)
     }
 
-    pub fn write_features<'a, K: ToBytes + ?Sized>(
+    pub fn write_event<'a, K: ToBytes + ?Sized>(
         &'a self,
         key: &'a K,
         event_id: EventId,
         timestamp: i64,
-        features: &'a Features,
+        event: &'a Event,
     ) -> Result<DeliveryFuture, KafkaError> {
         self.write(
             event_id,
             &self.topics.event,
             key,
             timestamp,
-            &serialize_features(&features),
+            &serialize_event(&event),
         )
         .map_err(|e| e.0)
     }

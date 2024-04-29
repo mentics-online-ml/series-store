@@ -7,7 +7,7 @@ use rdkafka::message::{BorrowedMessage, Header, Headers, OwnedHeaders, ToBytes};
 use rdkafka::producer::FutureProducer;
 use rdkafka::{Message, Offset};
 use rdkafka::config::ClientConfig;
-use shared_types::{EventId, Features};
+use shared_types::{EventId, Event};
 
 pub const EVENT_ID_FIELD: &str = "event_id";
 
@@ -89,14 +89,14 @@ pub(crate) fn deserialize_event_id(bytes: &[u8]) -> anyhow::Result<EventId> {
     Ok(str.parse::<u64>()?)
 }
 
-pub(crate) fn serialize_features(features: &Features) -> Vec<u8> {
+pub(crate) fn serialize_event(event: &Event) -> Vec<u8> {
     // TODO
-    format!("{}: placeholder data", features.id).into_bytes()
+    format!("{}: placeholder data", event.id).into_bytes()
 }
 
-pub(crate) fn deserialize_features(bytes: &[u8]) -> Features {
+pub(crate) fn deserialize_event(bytes: &[u8]) -> Event {
     // TODO
-    Features::default()
+    Event::default()
 }
 
 pub(crate) fn to_event_id(off: Offset) -> u64 {
