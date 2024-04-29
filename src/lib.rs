@@ -9,7 +9,7 @@ use rdkafka::error::KafkaError;
 use rdkafka::message::{BorrowedMessage, ToBytes};
 use rdkafka::producer::{DeliveryFuture, FutureProducer, FutureRecord};
 use rdkafka::{Message, Offset, TopicPartitionList};
-use shared_types::{Event, EventId, Logger, Raw};
+use shared_types::{Event, EventId, Logger};
 use util::*;
 
 pub struct SeriesReader {
@@ -34,7 +34,7 @@ impl SeriesReader {
 
     pub fn try_most_recent_event_ids(&self) -> anyhow::Result<Topics<u64>> {
          self.topics_iter().map(|topic| {
-            self.consumer.fetch_watermarks(&topic, 0, Duration::from_millis(2000)).map(|w| w.1 as u64)
+            self.consumer.fetch_watermarks(topic, 0, Duration::from_millis(2000)).map(|w| w.1 as u64)
         }).collect::<Result<Topics<u64>,KafkaError>>().with_context(|| "Could not get watermarks")
     }
 
@@ -91,7 +91,7 @@ impl SeriesReader {
     }
 
     pub fn seek(&self, topic: &str, offset: i64) -> anyhow::Result<()> {
-        self.consumer.seek(&topic, 0, Offset::OffsetTail(-offset), Duration::from_millis(2000))?;
+        self.consumer.seek(topic, 0, Offset::OffsetTail(-offset), Duration::from_millis(2000))?;
         Ok(())
     }
 
@@ -108,48 +108,37 @@ impl SeriesWriter {
         Self { producer, topics: get_topics() }
     }
 
-    pub fn write_raw<'a, K: ToBytes + ?Sized>(
-        &'a self,
+    pub fn write_raw<'a, K: ToBytes + ?Sized>(&'a self,
         key: &'a K,
         event_id: EventId,
         timestamp: i64,
         raw: &'a str,
     ) -> Result<DeliveryFuture, KafkaError> {
         self.write(event_id, &self.topics.raw, key, timestamp, raw)
-            .map_err(|e| e.0)
     }
 
-    pub fn write_event<'a, K: ToBytes + ?Sized>(
-        &'a self,
+    pub fn write_event<'a, K: ToBytes + ?Sized>(&'a self,
         key: &'a K,
         event_id: EventId,
         timestamp: i64,
         event: &'a Event,
     ) -> Result<DeliveryFuture, KafkaError> {
-        self.write(
-            event_id,
-            &self.topics.event,
-            key,
-            timestamp,
-            &serialize_event(&event),
-        )
-        .map_err(|e| e.0)
+        self.write(event_id, &self.topics.event, key, timestamp, &serialize_event(event))
     }
 
-    fn write<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized>(
-        &self,
+    fn write<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized>(&self,
         event_id: EventId,
         topic: &'a str,
         key: &'a K,
         timestamp: i64,
         payload: &'a P,
-    ) -> Result<DeliveryFuture, (KafkaError, FutureRecord<'a, K, P>)> {
+    ) -> Result<DeliveryFuture, KafkaError> {
         let meta = make_meta(EVENT_ID_FIELD, &serialize_event_id(event_id));
         let rec = FutureRecord::to(topic)
             .key(key)
             .timestamp(timestamp)
             .headers(meta)
             .payload(payload);
-        self.producer.send_result(rec)
+        self.producer.send_result(rec).map_err(|e| e.0)
     }
 }
