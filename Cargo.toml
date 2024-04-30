@@ -9,5 +9,5 @@ edition = "2021"
 anyhow = "1.0.82"
 rdkafka = { version = "0.36.2", default-features = false, features = ["tokio", "cmake-build"] }
 
-# shared-types = { git = "https://github.com/mentics-ml-demo/shared-types.git", branch = "main" }
+# shared-types = { git = "https://github.com/mentics-online-ml/shared-types.git", branch = "main" }
 shared-types = { path = "../shared-types" }
