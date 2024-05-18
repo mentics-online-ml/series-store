@@ -1,9 +1,11 @@
 use std::env;
 use std::str::from_utf8;
+use anyhow::Context;
 use rdkafka::consumer::BaseConsumer;
-use rdkafka::message::{Header, OwnedHeaders, ToBytes};
+use rdkafka::message::{BorrowedMessage, Header, Headers, OwnedHeaders, ToBytes};
 use rdkafka::producer::FutureProducer;
 use rdkafka::config::ClientConfig;
+use rdkafka::Message;
 use shared_types::{EventId, Event};
 
 pub const EVENT_ID_FIELD: &str = "event_id";
@@ -63,15 +65,14 @@ pub(crate) fn make_meta<B: ToBytes + ?Sized>(key: &str, value: &B) -> OwnedHeade
     })
 }
 
-// pub(crate) fn try_header_value<'a>(msg: &'a BorrowedMessage, key:&str) -> Option<&'a [u8]> {
-//     msg.headers().map(|headers| headers.iter().find(|h| h.key == key).map(|h| h.value)).flatten().flatten()
-// }
+pub(crate) fn try_header_value<'a>(msg: &'a BorrowedMessage, key:&str) -> Option<&'a [u8]> {
+    msg.headers().map(|headers| headers.iter().find(|h| h.key == key).map(|h| h.value)).flatten().flatten()
+}
 
-// pub(crate) fn try_event_id<'a>(msg: &'a BorrowedMessage) -> anyhow::Result<EventId> {
-//     let bytes = try_header_value(msg, EVENT_ID_FIELD).with_context(|| "Event id not found in message")?;
-//     deserialize_event_id(bytes)
-// }
-
+pub(crate) fn try_event_id<'a>(msg: &'a BorrowedMessage) -> anyhow::Result<EventId> {
+    let bytes = try_header_value(msg, EVENT_ID_FIELD).with_context(|| "Event id not found in message")?;
+    deserialize_event_id(bytes)
+}
 
  // TODO: Want to use binary someday, but during dev, text is easier to troubleshoot.
 
