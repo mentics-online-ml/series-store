@@ -69,7 +69,7 @@ pub(crate) fn try_header_value<'a>(msg: &'a BorrowedMessage, key:&str) -> Option
     msg.headers().map(|headers| headers.iter().find(|h| h.key == key).map(|h| h.value)).flatten().flatten()
 }
 
-pub(crate) fn try_event_id<'a>(msg: &'a BorrowedMessage) -> anyhow::Result<EventId> {
+pub(crate) fn try_event_id(msg: &BorrowedMessage) -> anyhow::Result<EventId> {
     let bytes = try_header_value(msg, EVENT_ID_FIELD).with_context(|| "Event id not found in message")?;
     deserialize_event_id(bytes)
 }

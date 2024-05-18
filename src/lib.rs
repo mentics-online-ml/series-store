@@ -12,7 +12,7 @@ use rdkafka::message::ToBytes;
 use rdkafka::producer::{DeliveryFuture, FutureProducer, FutureRecord};
 use rdkafka::TopicPartitionList;
 use serde::de::DeserializeOwned;
-use shared_types::{Event, EventId, Logger};
+use shared_types::{Event, EventId, Logger, SeriesEvent};
 use util::*;
 
 
@@ -182,7 +182,7 @@ impl SeriesReader {
     // }
 
     // pub async fn for_each_msg<T, F, Fut>(&self, func: F)
-    pub async fn for_each_msg<A: DeserializeOwned, T: EventHandler<A>>(&self, handler: &mut T)
+    pub async fn for_each_msg<A: SeriesEvent + DeserializeOwned, T: EventHandler<A>>(&self, handler: &mut T)
     where
         // T: DeserializeOwned,
         // Fut: std::future::Future<Output = bool>,
@@ -191,6 +191,7 @@ impl SeriesReader {
         for maybe_msg in self.consumer.iter() {
             let do_continue = match maybe_msg {
                 Ok(msg) => {
+                    // println!("Offset: {:?}", msg.offset());
                     self.proc_msg(&msg, handler).await.unwrap_or_else(|e| {
                         self.logger.log(format!("Error {:?} processing message {:?}", e, msg));
                         false
@@ -207,10 +208,12 @@ impl SeriesReader {
         }
     }
 
-    async fn proc_msg<'a, T: DeserializeOwned, H: EventHandler<T>>(&self, msg: &BorrowedMessage<'a>, handler: &mut H) -> anyhow::Result<bool> {
-        let event = msg_to(msg)?;
+    async fn proc_msg<'a, T: SeriesEvent + DeserializeOwned, H: EventHandler<T>>(&self, msg: &BorrowedMessage<'a>, handler: &mut H) -> anyhow::Result<bool> {
+        let mut event: T = msg_to(msg)?;
         let event_id = try_event_id(msg)?;
-        Ok(handler.handle(event_id, event))
+        assert!(event_id != 0);
+        event.set_event_id(event_id);
+        Ok(handler.handle(event))
     }
 
     pub fn read(&self) -> anyhow::Result<BorrowedMessage> {
@@ -319,5 +322,5 @@ pub fn msg_to<T: DeserializeOwned>(msg: &BorrowedMessage) -> anyhow::Result<T> {
 }
 
 pub trait EventHandler<T: DeserializeOwned> {
-    fn handle(&mut self, id: EventId, event: T) -> bool;
+    fn handle(&mut self, event: T) -> bool;
 }
