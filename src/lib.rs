@@ -1,18 +1,20 @@
+#![feature(trait_alias)]
+
 mod util;
 
-use std::any::type_name;
 use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::time::Duration;
 
-use anyhow::{anyhow, bail, Context};
+use anyhow::bail;
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::ToBytes;
 use rdkafka::producer::{DeliveryFuture, FutureProducer, FutureRecord};
 use rdkafka::TopicPartitionList;
 use serde::de::DeserializeOwned;
-use shared_types::{Event, EventId, Logger, SeriesEvent};
+
+use shared_types::*;
 use util::*;
 
 
@@ -22,6 +24,8 @@ pub use rdkafka::message::{BorrowedMessage,Message};
 
 const TIMEOUT: Duration = Duration::from_millis(2000);
 const PARTITION: i32 = 0;
+
+pub trait EventType = SeriesEvent + DeserializeOwned;
 
 #[derive(Clone,PartialEq,Eq,Hash)]
 pub struct Topic {
@@ -41,7 +45,6 @@ impl Topic {
         [object_type, symbol, event_type].join("-")
     }
 }
-
 impl Display for Topic {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.name)
@@ -72,8 +75,8 @@ impl SeriesReader {
         Ok(Self { consumer, topics: Vec::new(), subscription: TopicPartitionList::new(), logger })
     }
 
-    pub fn subscribe(&mut self, topic: &Topic) -> anyhow::Result<()> {
-        let offset = Offset::End;
+    pub fn subscribe(&mut self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
+        // let offset = Offset::End;
         self.topics.push(topic.to_owned());
 
         let mut tpl = TopicPartitionList::new();
@@ -105,7 +108,7 @@ impl SeriesReader {
     pub fn calc_next_event_ids(&mut self) -> anyhow::Result<HashMap<Topic, EventId>> {
         // let mut mapping = HashMap::new();
         expected_topics("raw").iter().map(|topic| {
-            self.subscribe(topic)?;
+            self.subscribe(topic, Offset::End)?;
             let next_id = if let Ok(id) = self.get_max_event_id(topic) {
                 println!("For topic {}, found max id {}", topic.name, id);
                 id + 1
@@ -182,7 +185,7 @@ impl SeriesReader {
     // }
 
     // pub async fn for_each_msg<T, F, Fut>(&self, func: F)
-    pub async fn for_each_msg<A: SeriesEvent + DeserializeOwned, T: EventHandler<A>>(&self, handler: &mut T)
+    pub async fn for_each_msg<A: EventType, T: EventHandler<A>>(&self, handler: &mut T)
     where
         // T: DeserializeOwned,
         // Fut: std::future::Future<Output = bool>,
@@ -208,7 +211,7 @@ impl SeriesReader {
         }
     }
 
-    async fn proc_msg<'a, T: SeriesEvent + DeserializeOwned, H: EventHandler<T>>(&self, msg: &BorrowedMessage<'a>, handler: &mut H) -> anyhow::Result<bool> {
+    async fn proc_msg<'a, T: EventType, H: EventHandler<T>>(&self, msg: &BorrowedMessage<'a>, handler: &mut H) -> anyhow::Result<bool> {
         let event: T = msg_to(msg)?;
         Ok(handler.handle(event))
     }
@@ -220,30 +223,82 @@ impl SeriesReader {
          }
     }
 
-    pub fn read_count(&self, count: i64) -> anyhow::Result<Vec<BorrowedMessage>> {
-        println!("Reading {} messages", count);
-        let assignment = self.consumer.assignment()?;
-        println!("  assignment: {:?}", assignment);
-        let watermarks = self.consumer.fetch_watermarks(assignment.elements()[0].topic(), 0, TIMEOUT)?;
-        println!("  watermarks: {:?}", watermarks);
-        let pos = self.consumer.position()?;
-        println!("  pos: {:?}", pos);
+    pub fn read_into<T: EventType>(&self) -> anyhow::Result<T> {
+        msg_to(&self.read()?)
+    }
 
-        if watermarks.1 - watermarks.0 < count {
-            bail!("Not enough messages found {} < {}", watermarks.1 - watermarks.0, count);
-        }
-        let mut v = Vec::new();
-        for i in 0..count {
-            v.push(self.read()?);
-            // match self.consumer.poll(Duration::from_millis(2000)) {
-            //     Some(Ok(msg)) => {
-            //         v.push(msg);
-            //     },
-            //     Some(Err(e)) => return Err(anyhow!(e)), //Err(anyhow::Error::new(e)),
-            //     None => bail!("Insufficient messages found {}", i)
-            // }
-        }
-        Ok(v)
+    // pub fn skip_if<F>(&self, predicate: F) -> anyhow::Result<BorrowedMessage>
+    // where F: Fn(&BorrowedMessage) -> anyhow::Result<bool> {
+    //     loop {
+    //         let msg = self.read()?;
+    //         if predicate(&msg)? {
+    //             return Ok(msg);
+    //         }
+    //     }
+    // }
+
+    // pub fn skip_count_if<F>(&self, count:usize, predicate: F) -> anyhow::Result<Option<BorrowedMessage>>
+    // where F: Fn(&BorrowedMessage) -> anyhow::Result<bool> {
+    //     for _ in 0..(count - 1) {
+    //         let msg = self.read()?;
+    //         if !predicate(&msg)? {
+    //             return Ok(None);
+    //         }
+    //      }
+    //      Wrong: Ok(Some(self.read()?))
+    // }
+
+    // pub fn skip_event_while<F, T: EventType>(&self, predicate: F) -> anyhow::Result<T>
+    // where F: Fn(&T) -> anyhow::Result<bool> {
+    //     loop {
+    //         let msg = self.read()?;
+    //         let ev: T = msg_to(&msg)?;
+    //         if !predicate(&ev)? {
+    //             return Ok(ev);
+    //         }
+    //     }
+    // }
+
+    // pub fn skip_event_while_count<F, T: EventType>(&self, count: usize, predicate: F) -> anyhow::Result<T>
+    // where F: Fn(&T) -> anyhow::Result<bool> {
+    //     for _ in 0..(count-1) {
+    //         let msg = self.read()?;
+    //         let ev: T = msg_to(&msg)?;
+    //         if !predicate(&ev)? {
+    //             return Ok(ev);
+    //         }
+    //     }
+    // }
+
+    pub fn read_count(&self, count: usize) -> anyhow::Result<Vec<BorrowedMessage>> {
+        (0..count).map(|_| {
+            self.read()
+        }).collect()
+
+        // println!("Reading {} messages", count);
+        // let assignment = self.consumer.assignment()?;
+        // println!("  assignment: {:?}", assignment);
+        // let watermarks = self.consumer.fetch_watermarks(assignment.elements()[0].topic(), 0, TIMEOUT)?;
+        // println!("  watermarks: {:?}", watermarks);
+        // let pos = self.consumer.position()?;
+        // println!("  pos: {:?}", pos);
+
+        // let watermarks = self.consumer.fetch_watermarks(self.topics, PARTITION, TIMEOUT)?;
+        // if watermarks.1 - watermarks.0 < count as i64 {
+        //     bail!("Not enough messages found {} < {}", watermarks.1 - watermarks.0, count);
+        // }
+        // let mut v = Vec::with_capacity(count);
+        // for _ in 0..count {
+        //     v.push(self.read()?);
+        //     // match self.consumer.poll(Duration::from_millis(2000)) {
+        //     //     Some(Ok(msg)) => {
+        //     //         v.push(msg);
+        //     //     },
+        //     //     Some(Err(e)) => return Err(anyhow!(e)), //Err(anyhow::Error::new(e)),
+        //     //     None => bail!("Insufficient messages found {}", i)
+        //     // }
+        // }
+        // Ok(v)
     }
 }
 
@@ -304,7 +359,7 @@ impl<'a> From<&'a Topic> for &'a str {
     fn from(topic: &'a Topic) -> Self { &topic.name }
 }
 
-pub fn msg_to<T: SeriesEvent + DeserializeOwned>(msg: &BorrowedMessage) -> anyhow::Result<T> {
+pub fn msg_to<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<T> {
     let raw = msg.payload();
     if let Some(bytes) = raw {
         // let payload = std::str::from_utf8(bytes)?;
@@ -321,6 +376,12 @@ pub fn msg_to<T: SeriesEvent + DeserializeOwned>(msg: &BorrowedMessage) -> anyho
     // Ok(serde_json::from_str(payload)?)
     // let quote: Quote = serde_json::from_str(payload)?;
 }
+
+// fn is_in_trading_time<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<bool> {
+//     let x: T = msg_to(msg)?;
+//     x.
+//     Ok(is_in_trading_time(ts))
+// }
 
 pub trait EventHandler<T: DeserializeOwned> {
     fn handle(&mut self, event: T) -> bool;
