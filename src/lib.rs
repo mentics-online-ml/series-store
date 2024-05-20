@@ -209,10 +209,7 @@ impl SeriesReader {
     }
 
     async fn proc_msg<'a, T: SeriesEvent + DeserializeOwned, H: EventHandler<T>>(&self, msg: &BorrowedMessage<'a>, handler: &mut H) -> anyhow::Result<bool> {
-        let mut event: T = msg_to(msg)?;
-        let event_id = try_event_id(msg)?;
-        assert!(event_id != 0);
-        event.set_event_id(event_id);
+        let event: T = msg_to(msg)?;
         Ok(handler.handle(event))
     }
 
@@ -307,11 +304,15 @@ impl<'a> From<&'a Topic> for &'a str {
     fn from(topic: &'a Topic) -> Self { &topic.name }
 }
 
-pub fn msg_to<T: DeserializeOwned>(msg: &BorrowedMessage) -> anyhow::Result<T> {
+pub fn msg_to<T: SeriesEvent + DeserializeOwned>(msg: &BorrowedMessage) -> anyhow::Result<T> {
     let raw = msg.payload();
     if let Some(bytes) = raw {
         // let payload = std::str::from_utf8(bytes)?;
-        Ok(serde_json::from_reader(bytes)?)
+        let mut event: T = serde_json::from_reader(bytes)?;
+        let event_id = try_event_id(msg)?;
+        assert!(event_id != 0);
+        event.set_event_id(event_id);
+        Ok(event)
     } else {
         bail!("No payload")
     }
