@@ -23,7 +23,7 @@ pub use rdkafka::Offset;
 pub use rdkafka::message::{BorrowedMessage,Message};
 
 const TIMEOUT: Duration = Duration::from_millis(2000);
-const PARTITION: i32 = 0;
+pub const PARTITION: i32 = 0;
 
 pub trait EventType = SeriesEvent + DeserializeOwned;
 
@@ -76,31 +76,21 @@ impl SeriesReader {
     }
 
     pub fn subscribe(&mut self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
-        // let offset = Offset::End;
+        println!("Subscribing to topic: {}, offset: {:?}", topic, offset);
+        if self.topics.contains(topic) {
+            // If we allowed this through, it would result in error: "Subscription error: _CONFLICT"
+            bail!("Attempted to subscribe to already subscribed topic: {}", topic);
+        }
         self.topics.push(topic.to_owned());
-
         let mut tpl = TopicPartitionList::new();
         tpl.add_partition_offset(topic.into(), PARTITION, offset)?;
         self.consumer.incremental_assign(&tpl)?;
-
-        // let topics: Vec<&str> = self.topics.iter().map(|t| t.name.as_str()).collect();
-        // self.consumer.subscribe(&topics)?;
-
-        // let metadata = self.consumer.fetch_metadata(None, TIMEOUT)?;
-        // println!("metadata: {:?}", metadata.topics().len());
-
         self.subscription = self.consumer.subscription()?;
-        // println!("subscription: {:?}", self.subscription);
-        // println!("assignment: {:?}", self.consumer.assignment());
-
-        // let partition = self.subscription.elements_for_topic(&topic.name).first().map_or(0, |p| p.partition());
-        // println!("Calling seek with: {:?}, {}, {:?}", topic.name, PARTITION, offset);
-        // self.consumer.seek(&topic.name, PARTITION, offset, TIMEOUT)?;
         Ok(())
     }
 
     pub fn get_max_event_id(&self, topic: &Topic) -> anyhow::Result<EventId> {
-        self.seek(topic, Offset::OffsetTail(1))?;
+        self.seek(topic, PARTITION, Offset::OffsetTail(1))?;
         let msg = self.read()?;
         try_event_id(&msg)
     }
@@ -139,8 +129,8 @@ impl SeriesReader {
     //     }
     // }
 
-    pub fn seek(&self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
-        Ok(self.consumer.seek(&topic.name, PARTITION, offset, TIMEOUT)?)
+    pub fn seek(&self, topic: &Topic, partition: i32, offset: Offset) -> anyhow::Result<()> {
+        Ok(self.consumer.seek(&topic.name, partition, offset, TIMEOUT)?)
     }
 
     // pub fn foreach_event<F: Fn(Event) -> ()>(&self, func: F) {
@@ -270,6 +260,12 @@ impl SeriesReader {
     //     }
     // }
 
+    pub fn read_count_into<T: EventType>(&self, count: usize) -> anyhow::Result<Vec<T>> {
+        (0..count).map(|_| {
+            self.read_into()
+        }).collect()
+    }
+
     pub fn read_count(&self, count: usize) -> anyhow::Result<Vec<BorrowedMessage>> {
         (0..count).map(|_| {
             self.read()
@@ -366,7 +362,7 @@ pub fn msg_to<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<T> {
         let mut event: T = serde_json::from_reader(bytes)?;
         let event_id = try_event_id(msg)?;
         assert!(event_id != 0);
-        event.set_event_id(event_id);
+        event.set_ids(event_id, msg.offset());
         Ok(event)
     } else {
         bail!("No payload")

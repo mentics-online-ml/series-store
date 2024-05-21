@@ -84,20 +84,3 @@ pub(crate) fn deserialize_event_id(bytes: &[u8]) -> anyhow::Result<EventId> {
     let str = from_utf8(bytes)?;
     Ok(str.parse::<u64>()?)
 }
-
-// pub(crate) fn serialize_event(event: &Event) -> Vec<u8> {
-//     // TODO
-//     format!("{}: placeholder data", event.id).into_bytes()
-// }
-
-// pub(crate) fn deserialize_event(bytes: &[u8]) -> Event {
-//     // TODO
-//     Event::default()
-// }
-
-// pub(crate) fn to_event_id(off: Offset) -> u64 {
-//     match off {
-//         Offset::Offset(n) => n as u64,
-//         _ => 0
-//     }
-// }
