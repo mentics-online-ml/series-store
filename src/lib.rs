@@ -207,10 +207,16 @@ impl SeriesReader {
     }
 
     pub fn read(&self) -> anyhow::Result<BorrowedMessage> {
-         match self.consumer.poll(Duration::from_millis(2000)) {
+        // TODO: retry once?
+        match self.consumer.poll(Duration::from_millis(2000)) {
             Some(x) => Ok(x?),
-            None => bail!("Timed out reading from series-store")
-         }
+            None => {
+                match self.consumer.poll(Duration::from_millis(2000)) {
+                    Some(x) => Ok(x?),
+                    None => bail!("Timed out reading from series-store")
+                }
+            }
+        }
     }
 
     pub fn read_into<T: EventType>(&self) -> anyhow::Result<T> {
