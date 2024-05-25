@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::time::Duration;
 
-use anyhow::bail;
+use anyhow::{bail, Context};
 use rdkafka::consumer::{BaseConsumer, Consumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::ToBytes;
@@ -27,7 +27,7 @@ pub const PARTITION: i32 = 0;
 
 pub trait EventType = SeriesEvent + DeserializeOwned;
 
-#[derive(Clone,PartialEq,Eq,Hash)]
+#[derive(Debug,Clone,PartialEq,Eq,Hash)]
 pub struct Topic {
     pub name: String,
     pub object_type: String,
@@ -43,6 +43,10 @@ impl Topic {
 
     fn topic_name(object_type: &str, symbol: &str, event_type: &str) -> String {
         [object_type, symbol, event_type].join("-")
+    }
+
+    fn as_str(&self) -> &str {
+        &self.name
     }
 }
 impl Display for Topic {
@@ -73,6 +77,26 @@ impl SeriesReader {
     pub fn new(logger: Box<dyn Logger>) -> anyhow::Result<Self> {
         let consumer = util::create_consumer();
         Ok(Self { consumer, topics: Vec::new(), subscription: TopicPartitionList::new(), logger })
+    }
+
+    pub fn new_topic(logger: Box<dyn Logger>, topic: &Topic) -> anyhow::Result<Self> {
+        let mut res = Self::new(logger)?;
+        res.subscribe(topic, Offset::Stored)?;
+        Ok(res)
+    }
+
+    pub fn print_status(&self) -> anyhow::Result<()> {
+        println!("Status for series on topics: {:?}", self.topics);
+        println!("  committed_offsets: {:?}", self.consumer.committed(TIMEOUT)?);
+        println!("  position (last read offset): {:?}", self.consumer.position()?);
+        println!("  assignments: {:?}", self.consumer.assignment()?);
+
+        for topic in self.topics.iter() {
+            println!("  Topic: {topic}:");
+            let watermarks = self.consumer.fetch_watermarks(topic.as_str(), PARTITION, TIMEOUT)?;
+            println!("    watermarks: {:?}", watermarks);
+        }
+        Ok(())
     }
 
     pub fn subscribe(&mut self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
@@ -207,21 +231,37 @@ impl SeriesReader {
     }
 
     pub fn read(&self) -> anyhow::Result<BorrowedMessage> {
-        // TODO: retry once?
-        match self.consumer.poll(Duration::from_millis(2000)) {
-            Some(x) => Ok(x?),
-            None => {
-                match self.consumer.poll(Duration::from_millis(2000)) {
-                    Some(x) => Ok(x?),
-                    None => bail!("Timed out reading from series-store")
-                }
-            }
-        }
+        let res = self.consumer.poll(None).transpose()?;
+        res.with_context(|| "Series returned nothing")
+
+        // match self.consumer.poll(Duration::from_millis(2000)) {
+        //     Some(x) => Ok(x?),
+        //     None => {
+        //         match self.consumer.poll(Duration::from_millis(2000)) {
+        //             Some(x) => Ok(x?),
+        //             None => bail!("Timed out reading from series-store")
+        //         }
+        //     }
+        // }
     }
 
     pub fn read_into<T: EventType>(&self) -> anyhow::Result<T> {
         msg_to(&self.read()?)
     }
+
+    pub fn collect_while<F,T: EventType>(&self, proc: F) -> anyhow::Result<Vec<T>>
+    where F: Fn(&T) -> bool {
+        let mut v = Vec::new();
+        loop {
+            let ev = self.read_into()?;
+            if !proc(&ev) {
+                break;
+            }
+            v.push(ev);
+        }
+        Ok(v)
+    }
+
 
     // pub fn skip_if<F>(&self, predicate: F) -> anyhow::Result<BorrowedMessage>
     // where F: Fn(&BorrowedMessage) -> anyhow::Result<bool> {
@@ -306,13 +346,12 @@ impl SeriesReader {
 
 pub struct SeriesWriter {
     producer: FutureProducer,
-    topics: Topics<String>,
 }
 
 impl SeriesWriter {
     pub fn new() -> Self {
         let producer = util::create_producer();
-        Self { producer, topics: get_topics() }
+        Self { producer }
     }
 
     // pub fn write_raw<'a, K: ToBytes + ?Sized>(&'a self,
@@ -353,8 +392,8 @@ impl SeriesWriter {
     }
 }
 
-// impl From<Topic> for String {
-//     fn from(topic: Topic) -> Self { topic.name }
+// impl From<Topic> for &str {
+//     fn from(topic: Topic) -> Self { &topic.name }
 // }
 
 impl<'a> From<&'a Topic> for &'a str {

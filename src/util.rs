@@ -29,17 +29,6 @@ impl<T: Default> FromIterator<T> for Topics<T> {
 
 fn get_brokers() -> String { env::var("REDPANDA_ENDPOINT").expect("Required environment variable REDPANDA_ENDPOINT not set") }
 
-pub(crate) fn get_topics() -> Topics<String> {
-    let topic_raw = env::var("TOPIC_RAW").unwrap();
-    let topic_event = env::var("TOPIC_EVENT").unwrap();
-    let topic_label = env::var("TOPIC_LABEL").unwrap();
-    Topics {
-        raw: topic_raw,
-        event: topic_event,
-        label: topic_label,
-    }
-}
-
 pub(crate) fn create_producer() -> FutureProducer {
     let brokers = get_brokers();
     ClientConfig::new()
@@ -54,6 +43,8 @@ pub(crate) fn create_consumer() -> BaseConsumer {
     ClientConfig::new()
         .set("bootstrap.servers", brokers)
         .set("group.id", "default_group")
+        .set("enable.auto.commit", "false")
+        .set("auto.offset.reset", "beginning")
         .create()
         .expect("Consumer creation error")
 }
