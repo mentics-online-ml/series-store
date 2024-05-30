@@ -10,23 +10,6 @@ use shared_types::EventId;
 
 pub const EVENT_ID_FIELD: &str = "event_id";
 
-#[derive(Debug)]
-pub struct Topics<T> {
-    pub raw: T,
-    pub event: T,
-    pub label: T,
-}
-
-impl<T: Default> FromIterator<T> for Topics<T> {
-    fn from_iter<I: IntoIterator<Item = T>>(iter: I) -> Self {
-        let mut ii = iter.into_iter();
-        let raw = ii.next().unwrap_or_default();
-        let event = ii.next().unwrap_or_default();
-        let label = ii.next().unwrap_or_default();
-        Topics { raw, event, label }
-    }
-}
-
 fn get_brokers() -> String { env::var("REDPANDA_ENDPOINT").expect("Required environment variable REDPANDA_ENDPOINT not set") }
 
 pub(crate) fn create_producer() -> FutureProducer {

@@ -6,10 +6,11 @@ use std::collections::HashMap;
 use std::fmt::{Display, Formatter};
 use std::time::Duration;
 
-use anyhow::{bail, Context};
-use rdkafka::consumer::{BaseConsumer, Consumer};
+use anyhow::{bail, anyhow, Context};
+use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer};
 use rdkafka::error::KafkaError;
 use rdkafka::message::ToBytes;
+use rdkafka::producer::future_producer::OwnedDeliveryResult;
 use rdkafka::producer::{DeliveryFuture, FutureProducer, FutureRecord};
 use rdkafka::TopicPartitionList;
 use serde::de::DeserializeOwned;
@@ -52,6 +53,12 @@ impl Topic {
 impl Display for Topic {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.name)
+    }
+}
+
+impl std::fmt::Debug for Topic {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Topic").field("name", &self.name).finish()
     }
 }
 
@@ -99,6 +106,12 @@ impl SeriesReader {
         Ok(())
     }
 
+    pub fn valid_offset_id(&self, offset: OffsetId) -> anyhow::Result<bool> {
+        // TODO: this assumes only one topic which might not be correct?
+        let (low, high) = self.consumer.fetch_watermarks(self.topics[0].as_str(), PARTITION, TIMEOUT)?;
+        Ok(offset >= low && offset <= high)
+    }
+
     pub fn subscribe(&mut self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
         println!("Subscribing to topic: {}, offset: {:?}", topic, offset);
         if self.topics.contains(topic) {
@@ -132,6 +145,10 @@ impl SeriesReader {
             Ok((topic.to_owned(), next_id))
             // mapping.insert(topic.to_owned(), next_id);
         }).collect()
+    }
+
+    pub fn commit(&self) -> anyhow::Result<()> {
+        self.consumer.commit_consumer_state(CommitMode::Sync).with_context(|| "Error committing consumer state")
     }
 
     // pub fn try_most_recent_event_ids(&self, topic: &Topic) -> anyhow::Result<u64> {
@@ -226,7 +243,7 @@ impl SeriesReader {
     }
 
     async fn proc_msg<'a, T: EventType, H: EventHandler<T>>(&self, msg: &BorrowedMessage<'a>, handler: &mut H) -> anyhow::Result<bool> {
-        let event: T = msg_to(msg)?;
+        let event: T = msg_to_event(msg)?;
         Ok(handler.handle(event))
     }
 
@@ -245,7 +262,11 @@ impl SeriesReader {
         // }
     }
 
-    pub fn read_into<T: EventType>(&self) -> anyhow::Result<T> {
+    pub fn read_into_event<T: EventType>(&self) -> anyhow::Result<T> {
+        msg_to_event(&self.read()?)
+    }
+
+    pub fn read_into<T: DeserializeOwned>(&self) -> anyhow::Result<T> {
         msg_to(&self.read()?)
     }
 
@@ -253,7 +274,7 @@ impl SeriesReader {
     where F: Fn(&T) -> bool {
         let mut v = Vec::new();
         loop {
-            let ev = self.read_into()?;
+            let ev = self.read_into_event()?;
             if !proc(&ev) {
                 break;
             }
@@ -308,7 +329,7 @@ impl SeriesReader {
 
     pub fn read_count_into<T: EventType>(&self, count: usize) -> anyhow::Result<Vec<T>> {
         (0..count).map(|_| {
-            self.read_into()
+            self.read_into_event()
         }).collect()
     }
 
@@ -375,20 +396,22 @@ impl SeriesWriter {
     //     self.write(event_id, &self.topics.event, key, timestamp, &serialize_event(event))
     // }
 
-    pub fn write<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized>(&self,
+    pub async fn write<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized>(&self,
         event_id: EventId,
         topic: &Topic,
         key: &'a K,
         timestamp: i64,
         payload: &'a P,
-    ) -> Result<DeliveryFuture, KafkaError> {
+    ) -> anyhow::Result<(i32, i64)> { // OwnedDeliveryResult {
         let meta = make_meta(EVENT_ID_FIELD, &serialize_event_id(event_id));
         let rec = FutureRecord::to(topic.into())
             .key(key)
             .timestamp(timestamp)
             .headers(meta)
             .payload(payload);
-        self.producer.send_result(rec).map_err(|e| e.0)
+        self.producer.send(rec, TIMEOUT).await.map_err(|(err, _)| {
+                anyhow!("Failed to write to {}: {}", topic, err)
+            })
     }
 }
 
@@ -400,10 +423,9 @@ impl<'a> From<&'a Topic> for &'a str {
     fn from(topic: &'a Topic) -> Self { &topic.name }
 }
 
-pub fn msg_to<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<T> {
+pub fn msg_to_event<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<T> {
     let raw = msg.payload();
     if let Some(bytes) = raw {
-        // let payload = std::str::from_utf8(bytes)?;
         let mut event: T = serde_json::from_reader(bytes)?;
         let event_id = try_event_id(msg)?;
         assert!(event_id != 0);
@@ -412,10 +434,15 @@ pub fn msg_to<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<T> {
     } else {
         bail!("No payload")
     }
-    // let bytes = msg.payload().ok_or(anyhow::anyhow!("No payload"))?;
-    // let payload = std::str::from_utf8(bytes)?;
-    // Ok(serde_json::from_str(payload)?)
-    // let quote: Quote = serde_json::from_str(payload)?;
+}
+
+pub fn msg_to<T: DeserializeOwned>(msg: &BorrowedMessage) -> anyhow::Result<T> {
+    let raw = msg.payload();
+    if let Some(bytes) = raw {
+        Ok(serde_json::from_reader(bytes)?)
+    } else {
+        bail!("No payload")
+    }
 }
 
 // fn is_in_trading_time<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<bool> {
