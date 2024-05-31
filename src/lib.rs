@@ -7,11 +7,10 @@ use std::fmt::{Display, Formatter};
 use std::time::Duration;
 
 use anyhow::{bail, anyhow, Context};
+use itertools::join;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer};
-use rdkafka::error::KafkaError;
 use rdkafka::message::ToBytes;
-use rdkafka::producer::future_producer::OwnedDeliveryResult;
-use rdkafka::producer::{DeliveryFuture, FutureProducer, FutureRecord};
+use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::TopicPartitionList;
 use serde::de::DeserializeOwned;
 
@@ -28,7 +27,7 @@ pub const PARTITION: i32 = 0;
 
 pub trait EventType = SeriesEvent + DeserializeOwned;
 
-#[derive(Debug,Clone,PartialEq,Eq,Hash)]
+#[derive(Clone,PartialEq,Eq,Hash)]
 pub struct Topic {
     pub name: String,
     pub object_type: String,
@@ -93,7 +92,7 @@ impl SeriesReader {
     }
 
     pub fn print_status(&self) -> anyhow::Result<()> {
-        println!("Status for series on topics: {:?}", self.topics);
+        println!("Status for series on topics: {}", join(self.topics.iter(), ", "));
         println!("  committed_offsets: {:?}", self.consumer.committed(TIMEOUT)?);
         println!("  position (last read offset): {:?}", self.consumer.position()?);
         println!("  assignments: {:?}", self.consumer.assignment()?);
@@ -106,10 +105,10 @@ impl SeriesReader {
         Ok(())
     }
 
-    pub fn valid_offset_id(&self, offset: OffsetId) -> anyhow::Result<bool> {
+    pub fn valid_offset_ids(&self, offset1: OffsetId, offset2: OffsetId) -> anyhow::Result<bool> {
         // TODO: this assumes only one topic which might not be correct?
         let (low, high) = self.consumer.fetch_watermarks(self.topics[0].as_str(), PARTITION, TIMEOUT)?;
-        Ok(offset >= low && offset <= high)
+        Ok(offset1 >= low && offset1 <= high && offset2 >= low && offset2 <= high)
     }
 
     pub fn subscribe(&mut self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
@@ -127,7 +126,7 @@ impl SeriesReader {
     }
 
     pub fn get_max_event_id(&self, topic: &Topic) -> anyhow::Result<EventId> {
-        self.seek(topic, PARTITION, Offset::OffsetTail(1))?;
+        self.seek_for(topic, PARTITION, Offset::OffsetTail(1))?;
         let msg = self.read()?;
         try_event_id(&msg)
     }
@@ -148,7 +147,7 @@ impl SeriesReader {
     }
 
     pub fn commit(&self) -> anyhow::Result<()> {
-        self.consumer.commit_consumer_state(CommitMode::Sync).with_context(|| "Error committing consumer state")
+        self.consumer.commit_consumer_state(CommitMode::Async).with_context(|| "Error committing consumer state")
     }
 
     // pub fn try_most_recent_event_ids(&self, topic: &Topic) -> anyhow::Result<u64> {
@@ -170,8 +169,12 @@ impl SeriesReader {
     //     }
     // }
 
-    pub fn seek(&self, topic: &Topic, partition: i32, offset: Offset) -> anyhow::Result<()> {
+    pub fn seek_for(&self, topic: &Topic, partition: i32, offset: Offset) -> anyhow::Result<()> {
         Ok(self.consumer.seek(&topic.name, partition, offset, TIMEOUT)?)
+    }
+
+    pub fn seek(&self, offset: OffsetId) -> anyhow::Result<()> {
+        Ok(self.consumer.seek(&self.topics[0].name, PARTITION, Offset::Offset(offset), TIMEOUT)?)
     }
 
     // pub fn foreach_event<F: Fn(Event) -> ()>(&self, func: F) {
@@ -363,6 +366,11 @@ impl SeriesReader {
         // }
         // Ok(v)
     }
+
+    pub fn offset_from_oldest(&self, relative_offset: OffsetId) -> anyhow::Result<OffsetId> {
+        let (low, _) = self.consumer.fetch_watermarks(&self.topics[0].name, PARTITION, TIMEOUT)?;
+        Ok(low + relative_offset)
+    }
 }
 
 pub struct SeriesWriter {
@@ -374,27 +382,6 @@ impl SeriesWriter {
         let producer = util::create_producer();
         Self { producer }
     }
-
-    // pub fn write_raw<'a, K: ToBytes + ?Sized>(&'a self,
-    //     key: &'a K,
-    //     event_type: &'a str,
-    //     symbol: &'a str,
-    //     event_id: EventId,
-    //     timestamp: i64,
-    //     raw: &'a str,
-    // ) -> Result<DeliveryFuture, KafkaError> {
-    //     let topic = topic_name(&self.topics.raw, symbol, event_type);
-    //     self.write(event_id, &topic, key, timestamp, raw)
-    // }
-
-    // pub fn write_event<'a, K: ToBytes + ?Sized>(&'a self,
-    //     key: &'a K,
-    //     event_id: EventId,
-    //     timestamp: i64,
-    //     event: &'a Event,
-    // ) -> Result<DeliveryFuture, KafkaError> {
-    //     self.write(event_id, &self.topics.event, key, timestamp, &serialize_event(event))
-    // }
 
     pub async fn write<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized>(&self,
         event_id: EventId,
@@ -415,9 +402,11 @@ impl SeriesWriter {
     }
 }
 
-// impl From<Topic> for &str {
-//     fn from(topic: Topic) -> Self { &topic.name }
-// }
+impl Default for SeriesWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl<'a> From<&'a Topic> for &'a str {
     fn from(topic: &'a Topic) -> Self { &topic.name }
@@ -439,7 +428,9 @@ pub fn msg_to_event<T: EventType>(msg: &BorrowedMessage) -> anyhow::Result<T> {
 pub fn msg_to<T: DeserializeOwned>(msg: &BorrowedMessage) -> anyhow::Result<T> {
     let raw = msg.payload();
     if let Some(bytes) = raw {
-        Ok(serde_json::from_reader(bytes)?)
+        Ok(serde_json::from_reader(bytes)
+            .with_context(|| format!("Failed to deserialize {}: {}", msg.offset(), String::from_utf8(bytes.to_vec()).unwrap()  ))?
+        )
     } else {
         bail!("No payload")
     }

@@ -40,7 +40,8 @@ pub(crate) fn make_meta<B: ToBytes + ?Sized>(key: &str, value: &B) -> OwnedHeade
 }
 
 pub(crate) fn try_header_value<'a>(msg: &'a BorrowedMessage, key:&str) -> Option<&'a [u8]> {
-    msg.headers().map(|headers| headers.iter().find(|h| h.key == key).map(|h| h.value)).flatten().flatten()
+    // msg.headers().map(|headers| headers.iter().find(|h| h.key == key).map(|h| h.value)).flatten().flatten()
+    msg.headers().and_then(|headers| headers.iter().find(|h| h.key == key).map(|h| h.value)).flatten()
 }
 
 pub(crate) fn try_event_id(msg: &BorrowedMessage) -> anyhow::Result<EventId> {
