@@ -21,11 +21,11 @@ pub(crate) fn create_producer() -> FutureProducer {
         .expect("Producer creation error")
 }
 
-pub(crate) fn create_consumer() -> BaseConsumer {
+pub(crate) fn create_consumer(group_id: &str) -> BaseConsumer {
     let brokers = get_brokers();
     ClientConfig::new()
         .set("bootstrap.servers", brokers)
-        .set("group.id", "default_group")
+        .set("group.id", group_id)
         .set("enable.auto.commit", "false")
         .set("auto.offset.reset", "beginning")
         .create()

@@ -1,5 +1,3 @@
-#![feature(trait_alias)]
-
 mod util;
 
 use std::collections::HashMap;
@@ -24,8 +22,6 @@ pub use rdkafka::message::{BorrowedMessage,Message};
 
 const TIMEOUT: Duration = Duration::from_millis(2000);
 pub const PARTITION: i32 = 0;
-
-pub trait EventType = SeriesEvent + DeserializeOwned;
 
 #[derive(Clone,PartialEq,Eq,Hash)]
 pub struct Topic {
@@ -80,14 +76,19 @@ pub struct SeriesReader {
 }
 
 impl SeriesReader {
-    pub fn new(logger: Box<dyn Logger>) -> anyhow::Result<Self> {
-        let consumer = util::create_consumer();
+    pub fn new(logger: Box<dyn Logger>, group_id: &str) -> anyhow::Result<Self> {
+        let consumer = util::create_consumer(group_id);
         Ok(Self { consumer, topics: Vec::new(), subscription: TopicPartitionList::new(), logger })
     }
 
-    pub fn new_topic(logger: Box<dyn Logger>, topic: &Topic) -> anyhow::Result<Self> {
-        let mut res = Self::new(logger)?;
-        res.subscribe(topic, Offset::Stored)?;
+    pub fn new_topic(logger: Box<dyn Logger>, group_id: &str, topic: &Topic) -> anyhow::Result<Self> {
+        Self::new_topic2(logger, group_id, topic, false)
+    }
+
+    pub fn new_topic2(logger: Box<dyn Logger>, group_id: &str, topic: &Topic, reset: bool) -> anyhow::Result<Self> {
+        let mut res = Self::new(logger, group_id)?;
+        let offset = if reset { Offset::Beginning } else { Offset::Stored };
+        res.subscribe(topic, offset)?;
         Ok(res)
     }
 
@@ -371,16 +372,38 @@ impl SeriesReader {
         let (low, _) = self.consumer.fetch_watermarks(&self.topics[0].name, PARTITION, TIMEOUT)?;
         Ok(low + relative_offset)
     }
+
+    pub fn reset_offset(&self) -> anyhow::Result<()> {
+        // self.consumer.seek(&self.topics[0].name, PARTITION, Offset::Beginning, TIMEOUT)?;
+        // self.consumer.commit(&self.subscription, mode)
+        // Ok(self.consumer.commit_consumer_state(CommitMode::Sync)?)
+        Ok(())
+    }
 }
 
 pub struct SeriesWriter {
+    topic: Topic,
     producer: FutureProducer,
 }
 
 impl SeriesWriter {
-    pub fn new() -> Self {
+    pub fn new(topic: Topic) -> Self {
         let producer = util::create_producer();
-        Self { producer }
+        Self { topic, producer }
+    }
+
+    pub async fn write_topic<'a, P: ToBytes + ?Sized>(
+        &self, event_id: EventId, timestamp: i64, payload: &'a P
+    ) -> anyhow::Result<(i32, i64)> {
+        let meta = make_meta(EVENT_ID_FIELD, &serialize_event_id(event_id));
+        let rec = FutureRecord::to((&self.topic).into())
+            .key("key")
+            .timestamp(timestamp)
+            .headers(meta)
+            .payload(payload);
+        self.producer.send(rec, TIMEOUT).await.map_err(|(err, _)| {
+                anyhow!("Failed to write to {}: {}", &self.topic, err)
+            })
     }
 
     pub async fn write<'a, K: ToBytes + ?Sized, P: ToBytes + ?Sized>(&self,
@@ -404,7 +427,7 @@ impl SeriesWriter {
 
 impl Default for SeriesWriter {
     fn default() -> Self {
-        Self::new()
+        Self::new(Topic::new("", "", ""))
     }
 }
 
@@ -441,7 +464,3 @@ pub fn msg_to<T: DeserializeOwned>(msg: &BorrowedMessage) -> anyhow::Result<T> {
 //     x.
 //     Ok(is_in_trading_time(ts))
 // }
-
-pub trait EventHandler<T: DeserializeOwned> {
-    fn handle(&mut self, event: T) -> bool;
-}
