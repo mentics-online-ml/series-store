@@ -72,13 +72,13 @@ pub struct SeriesReader {
     consumer: BaseConsumer,
     topics: Vec<Topic>,
     subscription: TopicPartitionList,
-    logger: Box<dyn Logger>,
+    // logger: Box<dyn Logger>,
 }
 
 impl SeriesReader {
     pub fn new(logger: Box<dyn Logger>, group_id: &str) -> anyhow::Result<Self> {
         let consumer = util::create_consumer(group_id);
-        Ok(Self { consumer, topics: Vec::new(), subscription: TopicPartitionList::new(), logger })
+        Ok(Self { consumer, topics: Vec::new(), subscription: TopicPartitionList::new() })
     }
 
     pub fn new_topic(logger: Box<dyn Logger>, group_id: &str, topic: &Topic) -> anyhow::Result<Self> {
@@ -88,12 +88,15 @@ impl SeriesReader {
     pub fn new_topic2(logger: Box<dyn Logger>, group_id: &str, topic: &Topic, reset: bool) -> anyhow::Result<Self> {
         let mut res = Self::new(logger, group_id)?;
         let offset = if reset { Offset::Beginning } else { Offset::Stored };
-        res.subscribe(topic, offset)?;
+        // res.subscribe(topic, offset)?;
+        Self::subscribe(&mut res, topic, offset)?;
         Ok(res)
     }
 
     pub fn print_status(&self) -> anyhow::Result<()> {
         println!("Status for series on topics: {}", join(self.topics.iter(), ", "));
+        // let s: String = self.consumer.group_metadata().unwrap().into();
+        // println!("  group_metadata: {:?}", self.consumer.);
         println!("  committed_offsets: {:?}", self.consumer.committed(TIMEOUT)?);
         println!("  position (last read offset): {:?}", self.consumer.position()?);
         println!("  assignments: {:?}", self.consumer.assignment()?);
@@ -119,10 +122,12 @@ impl SeriesReader {
             bail!("Attempted to subscribe to already subscribed topic: {}", topic);
         }
         self.topics.push(topic.to_owned());
-        let mut tpl = TopicPartitionList::new();
-        tpl.add_partition_offset(topic.into(), PARTITION, offset)?;
-        self.consumer.incremental_assign(&tpl)?;
-        self.subscription = self.consumer.subscription()?;
+        // let mut tpl = TopicPartitionList::new();
+        self.subscription.add_partition_offset(topic.into(), PARTITION, offset)?;
+        // self.consumer.incremental_assign(&tpl)?;
+        self.consumer.assign(&self.subscription)?;
+        // self.subscription = self.consumer.subscription()?;
+        self.print_status()?;
         Ok(())
     }
 
@@ -231,12 +236,12 @@ impl SeriesReader {
                 Ok(msg) => {
                     // println!("Offset: {:?}", msg.offset());
                     self.proc_msg(&msg, handler).await.unwrap_or_else(|e| {
-                        self.logger.log(format!("Error {:?} processing message {:?}", e, msg));
+                        println!("Error {:?} processing message {:?}", e, msg);
                         false
                     })
                 },
                 Err(e) => {
-                    self.logger.log(format!("Error reading series-store {:?}", e));
+                    println!("Error reading series-store {:?}", e);
                     false
                 },
             };

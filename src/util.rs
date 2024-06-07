@@ -57,5 +57,5 @@ pub(crate) fn serialize_event_id(event_id: EventId) -> String {
 
 pub(crate) fn deserialize_event_id(bytes: &[u8]) -> anyhow::Result<EventId> {
     let str = from_utf8(bytes)?;
-    Ok(str.parse::<u64>()?)
+    Ok(str.parse::<EventId>()?)
 }
