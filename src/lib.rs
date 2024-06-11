@@ -12,9 +12,10 @@ use rdkafka::producer::{FutureProducer, FutureRecord};
 use rdkafka::TopicPartitionList;
 use serde::de::DeserializeOwned;
 
+use series_proc::EventHandler;
 use shared_types::*;
+use series::*;
 use util::*;
-
 
 // Reexports
 pub use rdkafka::Offset;
@@ -72,21 +73,20 @@ pub struct SeriesReader {
     consumer: BaseConsumer,
     topics: Vec<Topic>,
     subscription: TopicPartitionList,
-    // logger: Box<dyn Logger>,
 }
 
 impl SeriesReader {
-    pub fn new(logger: Box<dyn Logger>, group_id: &str) -> anyhow::Result<Self> {
+    pub fn new(group_id: &str) -> anyhow::Result<Self> {
         let consumer = util::create_consumer(group_id);
         Ok(Self { consumer, topics: Vec::new(), subscription: TopicPartitionList::new() })
     }
 
-    pub fn new_topic(logger: Box<dyn Logger>, group_id: &str, topic: &Topic) -> anyhow::Result<Self> {
-        Self::new_topic2(logger, group_id, topic, false)
+    pub fn new_topic(group_id: &str, topic: &Topic) -> anyhow::Result<Self> {
+        Self::new_topic2(group_id, topic, false)
     }
 
-    pub fn new_topic2(logger: Box<dyn Logger>, group_id: &str, topic: &Topic, reset: bool) -> anyhow::Result<Self> {
-        let mut res = Self::new(logger, group_id)?;
+    pub fn new_topic2(group_id: &str, topic: &Topic, reset: bool) -> anyhow::Result<Self> {
+        let mut res = Self::new(group_id)?;
         let offset = if reset { Offset::Beginning } else { Offset::Stored };
         // res.subscribe(topic, offset)?;
         Self::subscribe(&mut res, topic, offset)?;
@@ -109,10 +109,14 @@ impl SeriesReader {
         Ok(())
     }
 
-    pub fn valid_offset_ids(&self, offset1: OffsetId, offset2: OffsetId) -> anyhow::Result<bool> {
-        // TODO: this assumes only one topic which might not be correct?
-        let (low, high) = self.consumer.fetch_watermarks(self.topics[0].as_str(), PARTITION, TIMEOUT)?;
-        Ok(offset1 >= low && offset1 <= high && offset2 >= low && offset2 <= high)
+    // pub fn valid_offset_ids(&self, offset1: OffsetId, offset2: OffsetId) -> anyhow::Result<bool> {
+    //     // TODO: this assumes only one topic which might not be correct?
+    //     let (low, high) = self.consumer.fetch_watermarks(self.topics[0].as_str(), PARTITION, TIMEOUT)?;
+    //     Ok(offset1 >= low && offset1 <= high && offset2 >= low && offset2 <= high)
+    // }
+
+    pub fn fetch_watermarks(&self) -> anyhow::Result<(OffsetId, OffsetId)> {
+        self.consumer.fetch_watermarks(self.topics[0].as_str(), PARTITION, TIMEOUT).with_context(|| "Error fetching watermarks")
     }
 
     pub fn subscribe(&mut self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
@@ -180,7 +184,12 @@ impl SeriesReader {
     }
 
     pub fn seek(&self, offset: OffsetId) -> anyhow::Result<()> {
-        Ok(self.consumer.seek(&self.topics[0].name, PARTITION, Offset::Offset(offset), TIMEOUT)?)
+        let off = if offset == 0 {
+            Offset::Beginning
+        } else {
+            Offset::Offset(offset)
+        };
+        Ok(self.consumer.seek(&self.topics[0].name, PARTITION, off, TIMEOUT)?)
     }
 
     // pub fn foreach_event<F: Fn(Event) -> ()>(&self, func: F) {
