@@ -388,9 +388,14 @@ impl SeriesReader {
     }
 
     pub fn reset_offset(&self) -> anyhow::Result<()> {
-        // self.consumer.seek(&self.topics[0].name, PARTITION, Offset::Beginning, TIMEOUT)?;
-        // self.consumer.commit(&self.subscription, mode)
-        // Ok(self.consumer.commit_consumer_state(CommitMode::Sync)?)
+        // println!("Called store_offset with {}", self.topics[0].name);
+        self.consumer.seek(&self.topics[0].name, PARTITION, Offset::Beginning, TIMEOUT)?;
+        self.consumer.poll(TIMEOUT);
+        // self.consumer.commit(&self.subscription, CommitMode::Sync);
+        self.consumer.commit_consumer_state(CommitMode::Sync)?;
+        // self.consumer.store_offset(&self.topics[0].name, PARTITION, 0)?;
+        // self.consumer.poll(Duration::from_millis(0));
+        // self.consumer.commit(&self.subscription, CommitMode::Sync)?;
         Ok(())
     }
 }
