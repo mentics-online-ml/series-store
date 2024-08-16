@@ -9,6 +9,7 @@ use itertools::join;
 use rdkafka::consumer::{BaseConsumer, CommitMode, Consumer};
 use rdkafka::message::ToBytes;
 use rdkafka::producer::{FutureProducer, FutureRecord};
+use rdkafka::util::Timeout;
 use rdkafka::TopicPartitionList;
 use serde::de::DeserializeOwned;
 
@@ -115,9 +116,9 @@ impl SeriesReader {
     //     Ok(offset1 >= low && offset1 <= high && offset2 >= low && offset2 <= high)
     // }
 
-    pub fn fetch_watermarks(&self) -> anyhow::Result<(OffsetId, OffsetId)> {
-        self.consumer.fetch_watermarks(self.topics[0].as_str(), PARTITION, TIMEOUT).with_context(|| "Error fetching watermarks")
-    }
+    // pub fn fetch_watermarks(&self) -> anyhow::Result<(OffsetId, OffsetId)> {
+    //     self.consumer.fetch_watermarks(self.topics[0].as_str(), PARTITION, TIMEOUT).with_context(|| "Error fetching watermarks")
+    // }
 
     pub fn subscribe(&mut self, topic: &Topic, offset: Offset) -> anyhow::Result<()> {
         println!("Subscribing to topic: {}, offset: {:?}", topic, offset);
@@ -136,9 +137,11 @@ impl SeriesReader {
     }
 
     pub fn get_max_event_id(&self, topic: &Topic) -> anyhow::Result<EventId> {
-        self.seek_for(topic, PARTITION, Offset::OffsetTail(1))?;
-        let msg = self.read()?;
-        try_event_id(&msg)
+        // self.seek_for(topic, PARTITION, Offset::OffsetTail(1))?;
+        // let msg = self.read()?;
+        // try_event_id(&msg)
+        let (_, high) = self.consumer.fetch_watermarks(&topic.name, PARTITION, TIMEOUT).with_context(|| "Failed calling fetch_watermarks")?;
+        Ok(high)
     }
 
     pub fn calc_next_event_ids(&mut self) -> anyhow::Result<HashMap<Topic, EventId>> {
@@ -266,8 +269,13 @@ impl SeriesReader {
     }
 
     pub fn read(&self) -> anyhow::Result<BorrowedMessage> {
-        let res = self.consumer.poll(None).transpose()?;
-        res.with_context(|| "Series returned nothing")
+        self.try_read(None).transpose().unwrap()
+    }
+
+    pub fn try_read<T: Into<Timeout>>(&self, timeout: T) -> anyhow::Result<Option<BorrowedMessage>> {
+        Ok(self.consumer.poll(timeout).transpose()?)
+        // let res = self.consumer.poll(timeout).transpose()?;
+        // res.with_context(|| "Series returned nothing")
 
         // match self.consumer.poll(Duration::from_millis(2000)) {
         //     Some(x) => Ok(x?),
@@ -383,7 +391,11 @@ impl SeriesReader {
     }
 
     pub fn offset_from_oldest(&self, relative_offset: OffsetId) -> anyhow::Result<OffsetId> {
+        if self.topics.len() > 1 {
+            panic!("offset_from_oldest called for ambiguous topic")
+        }
         let (low, _) = self.consumer.fetch_watermarks(&self.topics[0].name, PARTITION, TIMEOUT)?;
+        // let (low, _) = self.consumer.fetch_watermarks(topic, PARTITION, TIMEOUT)?;
         Ok(low + relative_offset)
     }
 
